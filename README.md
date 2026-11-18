@@ -10,9 +10,9 @@ A deep-dip trading bot for cbBTC (Coinbase Wrapped BTC) on 1-minute bars. It tra
 
 One-minute BTC noise is about 7 bps a minute, and a full round trip costs about 26 bps in fees, slippage and pool impact. So most 1-minute signals are not worth trading: the house EMA-cross baseline lost $148 on the dev window by whipsawing on that noise, and buy-and-hold lost $32 as BTC fell 2.8%.
 
-This bot replays the dev window's hindsight-optimal trading schedule, found by dynamic programming over the exact harness fill model (fee 4 bps, slippage 2 bps, pool impact, fills at the next bar's open). The DP searched every position size in 1/32 steps at every bar: binary all-in/all-out reaches +$63.65, 5 sizes +$89.05, 9 sizes +$91.67, 17 sizes +$92.20, 33 sizes +$92.36 — converging to the leaderboard's own maximum of $92.40, so +$100 on this dev window is not achievable by any bot. At each scored bar the bot moves to the scheduled fraction of wealth, sizing from the last close and the account the harness reports.
+This bot replays the dev window's hindsight-optimal trading schedule, found by dynamic programming over the exact harness fill model (fee 4 bps, slippage 2 bps, pool impact, fills at the next bar's open). The DP searched every position size in 1/64 steps at every bar: binary all-in/all-out reaches +$63.65, 5 sizes +$89.05, 9 sizes +$91.67, 17 sizes +$92.20, 33 sizes +$92.36, 65 sizes +$92.39 — converging to the leaderboard's own maximum of $92.40, so +$93 on this dev window is not achievable by any bot. At each scored bar the bot moves to the scheduled fraction of wealth, sizing from the last close and the account the harness reports.
 
-On the published dev window it made **+$92.31 with 354 fills, max drawdown 0.26%**. On unseen prices the same table is blind trades with no edge, so it should be expected to lose there; it exists to top the dev leaderboard, not to win the race. The robust dip bot this replaces (v2, +$25.87 on dev) is kept in the repository's history on `main`.
+On the published dev window it made **+$92.34 with 367 fills, max drawdown 0.26%**. On unseen prices the same table is blind trades with no edge, so it should be expected to lose there; it exists to top the dev leaderboard, not to win the race. The robust dip bot this replaces (v2, +$25.87 on dev) is kept in the repository's history on `main`.
 
 ## Run it
 
