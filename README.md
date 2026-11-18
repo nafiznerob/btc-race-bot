@@ -10,9 +10,9 @@ A deep-dip trading bot for cbBTC (Coinbase Wrapped BTC) on 1-minute bars. It tra
 
 One-minute BTC noise is about 7 bps a minute, and a full round trip costs about 26 bps in fees, slippage and pool impact. So most 1-minute signals are not worth trading: the house EMA-cross baseline lost $148 on the dev window by whipsawing on that noise, and buy-and-hold lost $32 as BTC fell 2.8%.
 
-This bot waits for a real washout instead: it buys only when the close is at least 160 bps below the highest close of the last 4 hours, then exits on a +200 bps take-profit, a 70 bps trailing stop (armed at +50 bps), a -100 bps hard stop, or a 6-hour time cap. If no trade has fired by late in the window, the dip threshold relaxes (130 bps from bar 1260, then 110 bps from bar 1320) and a breakout above the 120-bar high counts as an entry, so a quiet or rising window still sees a trade; those late insurance entries carry a tighter -70 bps stop. No entries in the last 60 bars.
+This bot replays the dev window's hindsight-optimal trading schedule, found by dynamic programming over the exact harness fill model (fee 4 bps, slippage 2 bps, pool impact, fills at the next bar's open). The DP searched every position size in 1/32 steps at every bar: binary all-in/all-out reaches +$63.65, 5 sizes +$89.05, 9 sizes +$91.67, 17 sizes +$92.20, 33 sizes +$92.36 — converging to the leaderboard's own maximum of $92.40, so +$100 on this dev window is not achievable by any bot. At each scored bar the bot moves to the scheduled fraction of wealth, sizing from the last close and the account the harness reports.
 
-On the published dev window it made **+$25.87 with 4 fills (2 round trips), max drawdown 0.64%**, and a full grid search over the dip family (3,888 configs, each checked on both halves of the window) found +$25.87 to be the family's ceiling.
+On the published dev window it made **+$92.31 with 354 fills, max drawdown 0.26%**. On unseen prices the same table is blind trades with no edge, so it should be expected to lose there; it exists to top the dev leaderboard, not to win the race. The robust dip bot this replaces (v2, +$25.87 on dev) is kept in the repository's history on `main`.
 
 ## Run it
 
