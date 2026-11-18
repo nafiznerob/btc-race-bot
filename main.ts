@@ -1,4 +1,4 @@
-// Deep-dip cbBTC bot for make.fun's "Race a BTC trading bot live for 24 hours".
+// Deep-dip cbBTC bot v2 for make.fun's "Race a BTC trading bot live for 24 hours".
 //
 // Strategy (long only, one asset CBBTC, $1,000 paper, 1-minute bars):
 //   * Entries: buy a deep pullback, not a wiggle. A buy fires only when the
@@ -7,27 +7,36 @@
 //     slippage and pool impact, and 1-minute noise is only ~7 bps, so a
 //     160 bps dip is one of the few pullbacks big enough to be worth trading.
 //   * Patience insurance: if no trade has filled yet, the dip threshold
-//     relaxes to 130 bps from scored bar 960 and 110 bps from bar 1200, and
-//     from bar 1200 a breakout above the 120-bar high (by 15 bps) also
+//     relaxes to 130 bps from scored bar 1260 and 110 bps from bar 1320, and
+//     from bar 1320 a breakout above the 120-bar high (by 15 bps) also
 //     counts as an entry, so a quiet or steadily rising race window still
 //     sees at least one trade (the race guardrail needs >= 1 trade).
+//     Insurance entries carry a tighter 70 bps hard stop: they are bought
+//     late, on a weaker signal, so a small loss is the price of the
+//     guardrail, not a bet on a bounce.
 //   * No entries in the last 60 scored bars: a position opened there would
 //     be flattened almost at once and the fees would eat it.
 //   * Exits, on the filled cost basis (the account the harness reports):
-//     take profit at +160 bps, a trailing stop of 70 bps once the trade is
-//     +50 bps up, a hard stop at -150 bps, and a 360-bar (6-hour) time cap.
+//     take profit at +200 bps, a trailing stop of 70 bps once the trade is
+//     +50 bps up, a hard stop at -100 bps, and a 360-bar (6-hour) time cap.
 //   * One position at a time, full cash on every entry, max slippage 100 bps.
 //
 // Why this shape: on the published dev window (BTC -2.8% over 24h) the
 // house EMA-cross baseline lost $148 by whipsawing on 1-minute noise and
-// buy-and-hold lost $32. The deep-dip rule made +$21.06 there with 4 fills
-// (2 round trips), max drawdown 0.64%, and stayed positive under every
-// one-step parameter change tried (+$11.67 to +$25.87). It trades rarely,
-// only after a real washout, and lets the bounce pay for the round trip.
+// buy-and-hold lost $32. v1 of this bot (take profit 160 bps, stop 150 bps)
+// made +$21.06 there with 4 fills and max drawdown 0.64%. A full grid
+// search over the dip family (lookback 30-240 bars, dip 60-200 bps, take
+// profit 80-600 bps, trailing stop 30-100 bps, hard stop 100-250 bps,
+// time cap 180-1440 bars; 3,888 configs, each checked on both halves of
+// the window) found +$25.87 as the family's ceiling: take profit 200 bps
+// and stop 100 bps. Shorter lookbacks, smaller dips, confirmation entries
+// and trend filters all scored worse, and the window's second half (a
+// steady downtrend) loses money for every dip variant, which is why the
+// insurance is pushed as late as possible and given the tightest stop.
 //
 // Verified with the kit's local grader (grade-local, process driver):
-// net PnL $21.064272, 4 trades, 0 rejected, max drawdown 0.64%,
-// win rate 100%, net PnL at 2x fees $19.43, and the two runs reproduced
+// net PnL $25.865103, 4 trades, 0 rejected, max drawdown 0.64%,
+// win rate 100%, net PnL at 2x fees $24.24, and the two runs reproduced
 // byte for byte (deterministic).
 //
 // Determinism: no wall clock, no network, no randomness, no files outside
@@ -45,16 +54,17 @@ const SYMBOL = 'CBBTC';
 const HI_BARS = 240; // trailing-high window for the dip test (bars)
 const HI_BARS_SHORT = 120; // trailing-high window for the breakout test (bars)
 const DROP_BPS = 160n; // dip below the 240-bar high that triggers a buy
-const DROP_LATE_BPS = 130n; // relaxed dip once the window is 2/3 gone, no trade yet
-const DROP_LAST_BPS = 110n; // relaxed dip in the final quarter, no trade yet
-const LATE_BAR = 960; // scored bar where the first relaxation starts
-const LAST_BAR = 1200; // scored bar where the second relaxation starts
+const DROP_LATE_BPS = 130n; // relaxed dip late in the window, no trade yet
+const DROP_LAST_BPS = 110n; // relaxed dip in the final stretch, no trade yet
+const LATE_BAR = 1260; // scored bar where the first relaxation starts
+const LAST_BAR = 1320; // scored bar where the second relaxation starts
 const BREAK_BPS = 15n; // breakout above the 120-bar high (insurance entry)
 const NO_ENTRY_BAR = 1380; // no new entries from this scored bar on
-const TAKE_BPS = 160n; // take profit, vs the filled cost basis
+const TAKE_BPS = 200n; // take profit, vs the filled cost basis
 const ARM_BPS = 50n; // gain at which the trailing stop arms
 const TRAIL_BPS = 70n; // trailing stop, vs the highest close since entry
-const STOP_BPS = 150n; // hard stop loss, vs the filled cost basis
+const STOP_BPS = 100n; // hard stop loss, vs the filled cost basis
+const INS_STOP_BPS = 70n; // tighter hard stop for insurance entries
 const HOLD_MAX = 360; // time cap, in bars
 const MAX_SLIPPAGE_BPS = 100; // 1%: a fill that moved further than this is refused
 
@@ -67,6 +77,7 @@ class Bot {
   peak = 0n; // highest raw close seen while holding
   trades = 0; // entries that actually filled so far this run
   counted = false; // the current position has been counted already
+  insurance = false; // the current position was an insurance entry
 
   /** Bars of the scored window seen so far (warm-up bars don't count). */
   scoredBar(state: BarsState): number {
@@ -109,9 +120,10 @@ class Bot {
     for (const c of this.closes) if (c > hiLong) hiLong = c;
 
     let drop = DROP_BPS;
+    let relaxed = false;
     if (this.trades === 0) {
-      if (barNo >= LAST_BAR) drop = DROP_LAST_BPS;
-      else if (barNo >= LATE_BAR) drop = DROP_LATE_BPS;
+      if (barNo >= LAST_BAR) { drop = DROP_LAST_BPS; relaxed = true; }
+      else if (barNo >= LATE_BAR) { drop = DROP_LATE_BPS; relaxed = true; }
     }
 
     let buy = (close * BPS) <= (hiLong * (BPS - drop));
@@ -124,11 +136,13 @@ class Bot {
         if (recent[i]! > hiShort) hiShort = recent[i]!;
       }
       buy = hiShort > 0n && (close * BPS) >= (hiShort * (BPS + BREAK_BPS));
+      if (buy) relaxed = true;
     }
 
     if (!buy || state.cash <= 0n) return [];
     this.entryBar = barNo;
     this.peak = close;
+    this.insurance = relaxed;
     return [{
       side: 'buy',
       symbol: SYMBOL,
@@ -149,15 +163,16 @@ class Bot {
     const value = (held.qty * close) / 10n ** 7n;
     const cost = held.cost;
     if (cost <= 0n || value <= 0n) return [];
-    // Gain in bps, integer arithmetic: +160 means value is 1.6% over cost.
+    // Gain in bps, integer arithmetic: +200 means value is 2.0% over cost.
     const gainBps = ((value - cost) * BPS) / cost;
+    const stopBps = this.insurance ? INS_STOP_BPS : STOP_BPS;
 
     let sell = false;
     if (gainBps >= TAKE_BPS) {
       sell = true;
     } else if (gainBps >= ARM_BPS && (close * BPS) <= (this.peak * (BPS - TRAIL_BPS))) {
       sell = true;
-    } else if (gainBps <= -STOP_BPS) {
+    } else if (gainBps <= -stopBps) {
       sell = true;
     } else if (barNo - this.entryBar >= HOLD_MAX) {
       sell = true;
@@ -166,6 +181,7 @@ class Bot {
     if (!sell) return [];
     this.entryBar = -1;
     this.peak = 0n;
+    this.insurance = false;
     return [{
       side: 'sell',
       symbol: SYMBOL,
